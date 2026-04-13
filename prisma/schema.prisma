@@ -1,0 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Analysis {
+  id                String   @id @default(cuid())
+  inputType         String   // "message" | "url" | "wallet" | "combined"
+  inputContent      String
+  riskScore         Float
+  threatLevel       String   // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  prediction        String   // "safe" | "phishing_attack" | "scam" | "suspicious" | etc.
+  recommendedAction String   // "allow" | "block" | "block_and_report" | "investigate"
+  details           String   @default("{}") // JSON string with detailed analysis
+  paymentVerified   Boolean  @default(false)
+  paymentTxHash     String?
+  paymentAmount     Float?
+  payments          Payment[]
+  createdAt         DateTime @default(now())
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  analysisId    String?
+  amount        Float
+  asset         String   @default("USDC")
+  network       String   @default("stellar:testnet")
+  status        String   @default("pending") // "pending" | "verified" | "failed"
+  txHash        String?
+  facilitator   String?
+  fromWallet    String?
+  toWallet      String?
+  createdAt     DateTime @default(now())
+
+  analysis      Analysis? @relation(fields: [analysisId], references: [id])
+}
+
+model AgentSession {
+  id            String   @id @default(cuid())
+  agentName     String
+  walletAddress String?
+  totalPaid     Float    @default(0)
+  requestCount  Int      @default(0)
+  lastActive    DateTime @default(now())
+  createdAt     DateTime @default(now())
+}
