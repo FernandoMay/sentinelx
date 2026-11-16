@@ -125,15 +125,30 @@ export function getX402ResourceServer(): x402ResourceServer {
 
 /** Payment config protecting POST /api/analyze (one fraud analysis = one payment). */
 export function getAnalyzeRouteConfig() {
-  return {
-    accepts: {
-      scheme: "exact" as const,
-      price: X402_PRICE,
-      network: X402_NETWORK_ID,
-      payTo: X402_PAY_TO,
-      description: "SentinelX fraud analysis (message/URL/wallet/email)",
-    },
-  };
+  // Optional: run against a custom SEP-41 token (e2e tests with a SAC contract).
+  // When absent, the default USDC money parser applies (X402_PRICE, e.g. "$0.01").
+  const assetContract = process.env.X402_ASSET_CONTRACT;
+  const assetAmount = process.env.X402_ASSET_AMOUNT;
+
+  const accepts =
+    assetContract && assetAmount
+      ? {
+          scheme: "exact" as const,
+          network: X402_NETWORK_ID,
+          payTo: X402_PAY_TO,
+          amount: assetAmount,
+          asset: assetContract,
+          description: "SentinelX fraud analysis (message/URL/wallet/email)",
+        }
+      : {
+          scheme: "exact" as const,
+          network: X402_NETWORK_ID,
+          payTo: X402_PAY_TO,
+          price: X402_PRICE,
+          description: "SentinelX fraud analysis (message/URL/wallet/email)",
+        };
+
+  return { accepts };
 }
 
 // ---------------------------------------------------------------------------
