@@ -190,7 +190,7 @@ export function analyzeFraud(input: FraudInput): {
 
     // Check for URL shorteners
     const shorteners = ["bit.ly", "t.co", "tinyurl", "goo.gl", "ow.ly", "is.gd", "buff.ly", "rb.gy"];
-    if (shorteners.some(s => input.url.includes(s))) {
+    if (shorteners.some(s => input.url?.includes(s))) {
       urlScore += 0.1;
       indicators.push("URL uses a link shortener");
     }
@@ -256,7 +256,7 @@ export function analyzeFraud(input: FraudInput): {
 
     // Check for disposable email patterns
     const disposablePatterns = [/temp/i, /throwaway/i, /fake/i, /guerrilla/i, /mailinator/i, /yopmail/i];
-    if (disposablePatterns.some(p => p.test(input.email))) {
+    if (disposablePatterns.some(p => input.email && p.test(input.email))) {
       emailScore += 0.2;
       indicators.push("Disposable email detected");
     }
