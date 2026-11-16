@@ -56,6 +56,17 @@ interface AnalysisResult {
   indicators: string[];
 }
 
+/** Real x402 v2 payment requirements decoded from the `payment-required` header */
+interface PaymentRequirementInfo {
+  amount: string; // atomic units
+  amountDecimal: string; // human readable (7 decimals for USDC-style tokens)
+  asset: string; // SEP-41 contract address
+  assetLabel: string; // friendly label (e.g. USDC)
+  network: string; // CAIP-2, e.g. stellar:testnet
+  payTo: string; // service wallet
+  sponsored: boolean; // facilitator sponsors settlement fees
+}
+
 // ---- Helpers ----
 const threatColorMap: Record<ThreatLevel, string> = {
   LOW: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
@@ -127,6 +138,31 @@ const phaseConfig: Record<
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Map the /api/analyze response to the UI result model */
+function mapAnalysis(analysisData: {
+  id: string;
+  riskScore: number;
+  threatLevel: ThreatLevel;
+  prediction: string;
+  recommendedAction: string;
+  payment?: { txHash?: string | null };
+  details?: { confidence?: number; checks?: AnalysisCheck[]; indicators?: string[] };
+}, fallbackTx: string): AnalysisResult {
+  return {
+    id: analysisData.id,
+    riskScore: Math.round(analysisData.riskScore * 100),
+    threatLevel: analysisData.threatLevel,
+    prediction: analysisData.prediction,
+    confidence: analysisData.details?.confidence
+      ? Math.round(analysisData.details.confidence * 100)
+      : 85,
+    recommendedAction: analysisData.recommendedAction,
+    txHash: analysisData.payment?.txHash || fallbackTx,
+    checks: analysisData.details?.checks || [],
+    indicators: analysisData.details?.indicators || [],
+  };
+}
+
 // ---- Component ----
 export function Analyzer() {
   const [activeTab, setActiveTab] = useState("message");
@@ -136,8 +172,19 @@ export function Analyzer() {
   const [phase, setPhase] = useState<AnalysisPhase>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [paymentDetails, setPaymentDetails] = useState<{ amount: number; asset: string; network: string; facilitator: string } | null>(null);
+  const [paymentDetails, setPaymentDetails] = useState<PaymentRequirementInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [x402Mode, setX402Mode] = useState<"live" | "demo">("demo");
+  const [testSecret, setTestSecret] = useState("");
+  const [settledTx, setSettledTx] = useState<string | null>(null);
+
+  // Detect whether the API runs real (live) or simulated (demo) x402 payments
+  React.useEffect(() => {
+    fetch("/api/x402/info")
+      .then((r) => r.json())
+      .then((info) => setX402Mode(info?.mode === "live" ? "live" : "demo"))
+      .catch(() => setX402Mode("demo"));
+  }, []);
 
   const loadSample = useCallback(
     (sample: { message?: string; url?: string; wallet?: string }) => {
@@ -169,6 +216,7 @@ export function Analyzer() {
 
     // Phase 1: Send request (expect 402)
     setPhase("sending");
+    setSettledTx(null);
     try {
       const firstResponse = await fetch("/api/analyze", {
         method: "POST",
@@ -178,23 +226,64 @@ export function Analyzer() {
 
       // Phase 2: Handle 402 Payment Required
       if (firstResponse.status === 402) {
-        const paymentInfo = await firstResponse.json();
-        setPaymentDetails(paymentInfo);
-        setPhase("payment_required");
-        await delay(1500);
+        // LIVE mode: decode the REAL x402 v2 requirements from the
+        // `payment-required` response header (base64 JSON per spec)
+        const prHeader = firstResponse.headers.get("payment-required");
+        let requirements: {
+          accepts?: Array<{
+            amount?: string;
+            asset?: string;
+            network?: string;
+            payTo?: string;
+            extra?: { areFeesSponsored?: boolean };
+          }>;
+        } | null = null;
+        if (prHeader) {
+          try {
+            requirements = JSON.parse(atob(prHeader));
+          } catch {
+            // ignore malformed header
+          }
+        }
+        const opt = requirements?.accepts?.[0];
+        const atomic = opt?.amount ? Number(opt.amount) : 100000;
+        const decimal = (atomic / 1e7).toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
 
-        // Phase 3: Sign payment (simulated)
+        const assetContract = opt?.asset ?? "";
+        const isUsdc =
+          assetContract ===
+            "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA" || // testnet USDC
+          assetContract ===
+            "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"; // mainnet USDC
+
+        setPaymentDetails({
+          amount: opt?.amount ?? "100000",
+          amountDecimal: decimal || "0.01",
+          asset: assetContract,
+          assetLabel: isUsdc ? "USDC" : assetContract.slice(0, 8) + "…",
+          network: opt?.network ?? "stellar:testnet",
+          payTo: opt?.payTo ?? "",
+          sponsored: opt?.extra?.areFeesSponsored ?? true,
+        });
+        setPhase("payment_required");
+
+        if (x402Mode === "live") {
+          // Real payments: stop here — the user signs and pays with a testnet
+          // secret key (browser signing via @x402/stellar) from the panel below.
+          return;
+        }
+
+        // DEMO mode: simulated payment theater (no real transactions)
+        await delay(1500);
         setPhase("signing");
         await delay(1800);
-
-        // Phase 4: Retry with payment header
         setPhase("verifying");
         const paymentHeader = JSON.stringify({
           version: "1",
-          amount: paymentInfo.amount?.toString() || "0.01",
-          asset: paymentInfo.asset || "USDC",
-          network: paymentInfo.network || "stellar:testnet",
-          facilitator: paymentInfo.facilitator || "",
+          amount: "0.01",
+          asset: "USDC",
+          network: "stellar:testnet",
+          facilitator: "",
           signature: `sim_${Date.now().toString(36)}`,
           payload: btoa(JSON.stringify({ resource: "fraud-analysis", timestamp: Date.now() })),
         });
@@ -218,37 +307,12 @@ export function Analyzer() {
         }
 
         const analysisData = await secondResponse.json();
-
-        // Map API response to our result type
-        const mappedResult: AnalysisResult = {
-          id: analysisData.id,
-          riskScore: Math.round(analysisData.riskScore * 100),
-          threatLevel: analysisData.threatLevel,
-          prediction: analysisData.prediction,
-          confidence: analysisData.details?.confidence ? Math.round(analysisData.details.confidence * 100) : 85,
-          recommendedAction: analysisData.recommendedAction,
-          txHash: analysisData.payment?.txHash || "TX_UNKNOWN",
-          checks: analysisData.details?.checks || [],
-          indicators: analysisData.details?.indicators || [],
-        };
-
-        setResult(mappedResult);
+        setResult(mapAnalysis(analysisData, "TX_SIMULATED"));
         setPhase("done");
       } else if (firstResponse.ok) {
         // Direct response (no payment required - shouldn't happen normally)
         const analysisData = await firstResponse.json();
-        const mappedResult: AnalysisResult = {
-          id: analysisData.id,
-          riskScore: Math.round(analysisData.riskScore * 100),
-          threatLevel: analysisData.threatLevel,
-          prediction: analysisData.prediction,
-          confidence: analysisData.details?.confidence ? Math.round(analysisData.details.confidence * 100) : 85,
-          recommendedAction: analysisData.recommendedAction,
-          txHash: "DIRECT_ACCESS",
-          checks: analysisData.details?.checks || [],
-          indicators: analysisData.details?.indicators || [],
-        };
-        setResult(mappedResult);
+        setResult(mapAnalysis(analysisData, "DIRECT_ACCESS"));
         setPhase("done");
       } else {
         const errData = await firstResponse.json().catch(() => ({}));
@@ -258,7 +322,79 @@ export function Analyzer() {
       setError(err instanceof Error ? err.message : "An error occurred");
       setPhase("idle");
     }
-  }, [message, url, wallet]);
+  }, [message, url, wallet, x402Mode]);
+
+  /**
+   * LIVE mode: sign the x402 payment in the browser with a Stellar testnet
+   * secret key and let the @x402/fetch wrapper handle the 402 → pay → retry flow.
+   */
+  const payAndAnalyze = useCallback(async () => {
+    const requestBody: Record<string, string> = {};
+    if (message.trim()) requestBody.message = message;
+    if (url.trim()) requestBody.url = url;
+    if (wallet.trim()) requestBody.wallet = wallet;
+
+    try {
+      setPhase("signing");
+      setError(null);
+
+      // Dynamic imports keep the Stellar SDK out of the initial bundle
+      const [{ createEd25519Signer }, { ExactStellarScheme }, { x402Client }, { wrapFetchWithPayment }] =
+        await Promise.all([
+          import("@x402/stellar"),
+          import("@x402/stellar/exact/client"),
+          import("@x402/core/client"),
+          import("@x402/fetch"),
+        ]);
+
+      const signer = createEd25519Signer(testSecret.trim(), "stellar:testnet");
+      const client = new x402Client().register("stellar:testnet", new ExactStellarScheme(signer));
+      // Allow the configured asset contract when it is not a default asset (USDC)
+      const assetContract = paymentDetails?.asset;
+      if (assetContract) {
+        client.setSpendControls({
+          allowedAssets: [
+            {
+              network: (paymentDetails?.network ?? "stellar:testnet") as `${string}:${string}`,
+              asset: assetContract,
+            },
+          ],
+        });
+      }
+      const fetchWithPay = wrapFetchWithPayment(globalThis.fetch, client);
+
+      setPhase("verifying");
+      const response = await fetchWithPay("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+
+      // Decode the settlement result (payment-response header, base64 JSON)
+      const settleHeader = response.headers.get("payment-response");
+      if (settleHeader) {
+        try {
+          const settle = JSON.parse(atob(settleHeader));
+          if (settle?.transaction) setSettledTx(settle.transaction);
+        } catch {
+          // ignore malformed header
+        }
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Server error: ${response.status}`);
+      }
+
+      setPhase("analyzing");
+      const analysisData = await response.json();
+      setResult(mapAnalysis(analysisData, settledTx || "TX_SETTLED"));
+      setPhase("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Payment failed");
+      setPhase("payment_required");
+    }
+  }, [message, url, wallet, testSecret, paymentDetails, settledTx]);
 
   const hasInput =
     activeTab === "message"
@@ -463,7 +599,14 @@ export function Analyzer() {
               exit={{ opacity: 0, y: -10 }}
               className="mt-6"
             >
-              <PaymentFlow phase={phase} paymentDetails={paymentDetails} />
+              <PaymentFlow
+                phase={phase}
+                paymentDetails={paymentDetails}
+                x402Mode={x402Mode}
+                testSecret={testSecret}
+                onTestSecretChange={setTestSecret}
+                onPay={() => void payAndAnalyze()}
+              />
             </motion.div>
           )}
         </AnimatePresence>
@@ -494,9 +637,17 @@ export function Analyzer() {
 function PaymentFlow({
   phase,
   paymentDetails,
+  x402Mode,
+  testSecret,
+  onTestSecretChange,
+  onPay,
 }: {
   phase: AnalysisPhase;
-  paymentDetails: { amount: number; asset: string; network: string; facilitator: string } | null;
+  paymentDetails: PaymentRequirementInfo | null;
+  x402Mode: "live" | "demo";
+  testSecret: string;
+  onTestSecretChange: (v: string) => void;
+  onPay: () => void;
 }) {
   const phases: AnalysisPhase[] = [
     "sending",
@@ -546,15 +697,45 @@ function PaymentFlow({
           >
             <div className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-400" />
-              <div className="text-xs text-muted-foreground">
-                <p className="font-medium text-yellow-400">402 Payment Required</p>
-                <p>Amount: {paymentDetails.amount} {paymentDetails.asset}</p>
+              <div className="w-full text-xs text-muted-foreground">
+                <p className="font-medium text-yellow-400">402 Payment Required (x402 v2 real)</p>
+                <p>
+                  Amount: {paymentDetails.amountDecimal} {paymentDetails.assetLabel}
+                  {paymentDetails.sponsored && " · settlement fees sponsored by facilitator"}
+                </p>
                 <p>Network: {paymentDetails.network}</p>
-                {paymentDetails.facilitator && (
-                  <p className="font-mono mt-1 opacity-60">Facilitator: {paymentDetails.facilitator}</p>
+                {paymentDetails.payTo && (
+                  <p className="font-mono mt-1 opacity-60 break-all">payTo: {paymentDetails.payTo}</p>
                 )}
               </div>
             </div>
+
+            {x402Mode === "live" && phase === "payment_required" && (
+              <div className="mt-3 space-y-2">
+                <Input
+                  type="password"
+                  placeholder="Stellar TESTNET secret key (S…) — used only in your browser to sign the payment"
+                  value={testSecret}
+                  onChange={(e) => onTestSecretChange(e.target.value)}
+                  className="font-mono text-xs"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={onPay}
+                    disabled={testSecret.trim().length < 56}
+                  >
+                    <Sparkles className="mr-1 h-3 w-3" />
+                    Sign &amp; pay on-chain
+                  </Button>
+                  <span className="text-[10px] opacity-60">
+                    Real USDC transfer on Stellar testnet. Get a funded test account:
+                    lab.stellar.org + faucet.circle.com
+                  </span>
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
         {phase === "verifying" && (
