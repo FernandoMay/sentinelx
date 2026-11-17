@@ -1,6 +1,6 @@
 # SentinelX - AI Fraud Detection API with x402 on Stellar
 
-A cutting-edge fraud detection system that combines AI-powered analysis with the x402 payment protocol on the Stellar network. Built for the Stellar Hacks: Agents Hackathon.
+A cutting-edge fraud detection system that combines AI-powered analysis with the x402 payment protocol on the Stellar network. Built for the Stellar Hacks: Agents Hackathon — **now running REAL on-chain x402 payments** (v2 spec, Coinbase facilitator, fees sponsored).
 
 ## Overview
 
@@ -17,7 +17,8 @@ SentinelX is a comprehensive fraud detection platform that:
 - **Styling**: Tailwind CSS 4, shadcn/ui components
 - **Backend**: Next.js API routes, Prisma ORM
 - **Database**: SQLite (production-ready)
-- **Payment Protocol**: x402 on Stellar testnet
+- **Payment Protocol**: x402 v2 on Stellar (`@x402/core`, `@x402/stellar`, `@x402/next`, `@x402/fetch`)
+- **Facilitator**: Coinbase x402 facilitator (`stellar:testnet`, sponsored fees)
 - **AI/ML**: Custom fraud detection engine with pattern matching
 
 ## Features
@@ -29,10 +30,11 @@ SentinelX is a comprehensive fraud detection platform that:
 - Real-time threat level assessment (LOW, MEDIUM, HIGH, CRITICAL)
 
 ### x402 Payment Integration
-- Seamless 402 payment flow implementation
-- Stellar testnet integration with USDC
-- Automatic payment verification
-- Transaction tracking and persistence
+- **Real on-chain payments** (x402 v2): 402 → sign auth entry → facilitator verify + settle → analysis
+- Stellar testnet USDC (SEP-41); fees sponsored by the Coinbase facilitator
+- Real `txHash` persisted per payment via the `onAfterSettle` hook
+- Browser payments (testnet secret signing) + agent payments (CLI)
+- Demo mode (`X402_MODE=demo`) preserved for offline demos
 
 ### Autonomous Agent Demo
 - Batch fraud analysis capabilities
@@ -86,6 +88,59 @@ bun run dev
 
 6. **Open your browser**
 Navigate to [http://localhost:3000](http://localhost:3000)
+
+## Real x402 payments (live mode)
+
+POST `/api/analyze` is protected by **real** x402 (protocol v2) on `stellar:testnet`:
+
+1. `POST /api/analyze` without payment → `402` + `payment-required` header (base64 JSON with `accepts`: amount, USDC contract, `payTo`, `areFeesSponsored: true`)
+2. The client signs a **Soroban auth entry** for a USDC transfer (`exact` scheme)
+3. The **Coinbase x402 facilitator** verifies and settles **on-chain** (fees sponsored)
+4. The route returns the analysis; the real `txHash` is stored in the DB by the `onAfterSettle` hook
+
+Configuration lives in `.env` (`X402_MODE`, `X402_NETWORK`, `X402_PRICE`, `X402_PAY_TO`, `X402_FACILITATOR_URL`, optional `X402_ASSET_CONTRACT` for non-USDC assets). See `.env.example`.
+
+### Agent integration (5 lines)
+
+```ts
+import { x402Client } from "@x402/core/client";
+import { ExactStellarScheme } from "@x402/stellar/exact/client";
+import { createEd25519Signer } from "@x402/stellar";
+import { wrapFetchWithPayment } from "@x402/fetch";
+
+const client = new x402Client().register("stellar:testnet", new ExactStellarScheme(createEd25519Signer(SECRET, "stellar:testnet")));
+const fetchWithPay = wrapFetchWithPayment(fetch, client);
+
+const res = await fetchWithPay("https://sentinelx402.netlify.app/api/analyze", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ url: "http://bit.ly/free-xlm-giveaway" }),
+});
+const analysis = await res.json(); // riskScore, threatLevel, prediction…
+```
+
+### CLI: pay for a real analysis
+
+```bash
+# one-time testnet setup (custom TUSDC SEP-41 token via a real Soroban SAC contract,
+# funded via friendbot — no Circle faucet needed for e2e tests)
+node scripts/setup-testnet.mjs
+
+# pay 0.01 per request, for real
+CLIENT_PRIVATE_KEY=S... node scripts/agent-client.mjs \
+  http://localhost:3111/api/analyze '{"url":"http://bit.ly/free-xlm-giveaway"}'
+```
+
+> ✅ **Verified end-to-end (Nov 2026)**: agent paid 0.01 on-chain (Horizon balances moved,
+> e.g. tx `263e31bc22f0bcc1d049dde93c2c309d19c61556ceb214433301bdc46dfeb29b`), facilitator
+> settled, analysis returned, `txHash` persisted in the DB. Same flow works from the
+> browser with a testnet secret key.
+
+### Wallets for x402 (auth-entry signing)
+
+Varial, Hana, HOT, Klever, OneKey, Scopuly (per the
+[Stellar x402 docs](https://developers.stellar.org/docs/build/agentic-payments/x402)).
+The bundled analyzer UI also supports testnet secret-key signing in-browser.
 
 ## API Endpoints
 
@@ -160,7 +215,8 @@ src/
     sentinel/            # Main application components
   lib/
     fraud-engine.ts      # Core fraud detection logic
-    x402.ts             # x402 protocol utilities
+    x402.ts             # x402 demo-mode (simulated) payment utilities
+    x402-live.ts        # REAL x402 v2 integration (@x402/stellar, facilitator, settlement hook)
     prisma.ts           # Database client
 ```
 
