@@ -130,25 +130,17 @@ export function getAnalyzeRouteConfig() {
   const assetContract = process.env.X402_ASSET_CONTRACT;
   const assetAmount = process.env.X402_ASSET_AMOUNT;
 
-  const accepts =
-    assetContract && assetAmount
-      ? {
-          scheme: "exact" as const,
-          network: X402_NETWORK_ID,
-          payTo: X402_PAY_TO,
-          amount: assetAmount,
-          asset: assetContract,
-          description: "SentinelX fraud analysis (message/URL/wallet/email)",
-        }
-      : {
-          scheme: "exact" as const,
-          network: X402_NETWORK_ID,
-          payTo: X402_PAY_TO,
-          price: X402_PRICE,
-          description: "SentinelX fraud analysis (message/URL/wallet/email)",
-        };
-
-  return { accepts };
+  return {
+    accepts: {
+      scheme: "exact",
+      network: X402_NETWORK_ID,
+      payTo: X402_PAY_TO,
+      price: assetContract && assetAmount
+        ? { amount: assetAmount, asset: assetContract }
+        : X402_PRICE,
+    },
+    description: "SentinelX fraud analysis (message/URL/wallet/email)",
+  };
 }
 
 // ---------------------------------------------------------------------------
