@@ -54,3 +54,7 @@ server.log
 /skills/
 # allow the example env in the public repo
 !.env.example
+.x402-verified.json
+
+# x402 verifier state (receipt hashes)
+.x402-verified.json
