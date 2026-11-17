@@ -131,10 +131,63 @@ CLIENT_PRIVATE_KEY=S... node scripts/agent-client.mjs \
   http://localhost:3111/api/analyze '{"url":"http://bit.ly/free-xlm-giveaway"}'
 ```
 
-> ✅ **Verified end-to-end (Nov 2026)**: agent paid 0.01 on-chain (Horizon balances moved,
-> e.g. tx `263e31bc22f0bcc1d049dde93c2c309d19c61556ceb214433301bdc46dfeb29b`), facilitator
-> settled, analysis returned, `txHash` persisted in the DB. Same flow works from the
-> browser with a testnet secret key.
+> The agent **never pays blindly**: it validates every payment requirement before signing
+> (pay-to allow-list via `X402_ALLOWED_PAY_TO`, spend cap via `X402_MAX_SPEND`, asset
+> allow-list) with a `registerPolicy` hook, and maps failures to friendly messages
+> (insufficient balance, expired authorization, replay/double-charge).
+
+### Hashes de prueba (Stellar testnet)
+
+Pagos **reales, on-chain**, verificables en [stellar.expert](https://stellar.expert/explorer/testnet):
+
+| Hash | Origen | Monto | Resultado |
+|---|---|---|---|
+| [`b2c6739a876a10ef8ffbbf58ceaf9c24f17cd3117601e21bac86198f587a6bae`](https://stellar.expert/explorer/testnet/tx/b2c6739a876a10ef8ffbbf58ceaf9c24f17cd3117601e21bac86198f587a6bae) | Agente CLI (`scripts/agent-client.mjs`) | 0.01 TUSDC (100000 atomic) | Análisis de fraude devuelto tras el pago |
+| [`263e31bc22f0bcc1d049dde93c2c309d19c61556ceb214433301bdc46dfeb29b`](https://stellar.expert/explorer/testnet/tx/263e31bc22f0bcc1d049dde93c2c309d19c61556ceb214433301bdc46dfeb29b) | UI del navegador (firma in-browser) | 0.01 TUSDC (100000 atomic) | Riesgo 57/MEDIUM devuelto tras el pago |
+
+Ambos son transferencias SAC (`transfer` event) del contrato TUSDC
+[`CCIDIQ56ZRGTTSPEALP6LK6IET4PF24TPW743XPL6R767SKMJHREGFTE`](https://stellar.expert/explorer/testnet/contract/CCIDIQ56ZRGTTSPEALP6LK6IET4PF24TPW743XPL6R767SKMJHREGFTE)
+del emisor cliente `GDQP…BNHZ` al servicio `GCNC…KFGW`, liquidadas por el facilitador x402 de
+Coinbase (`https://www.x402.org/facilitator`) con fees patrocinados. El flujo con USDC real de
+Circle usa el mismo código con el contrato `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`.
+
+### Verificar un recibo on-chain
+
+El verificador consulta la transacción por hash con **Stellar RPC** (`getTransaction`), decodifica
+el evento `transfer` del contrato y valida **activo, monto y destinatario** antes de aceptar el
+recibo. Un hash nunca se acepta dos veces (protección anti-replay):
+
+```bash
+node scripts/verify-payment.mjs b2c6739a876a10ef8ffbbf58ceaf9c24f17cd3117601e21bac86198f587a6bae \
+  --asset CCIDIQ56ZRGTTSPEALP6LK6IET4PF24TPW743XPL6R767SKMJHREGFTE \
+  --payTo GCNCKN6ZKZB2FZAVPVEU3B2RA6ETYHUDFXU473CUGBJD2U7LG4OEKFGW \
+  --amount 100000
+# → ✓ VERIFIED receipt … (asset / from / to / amount)
+```
+
+Rechazos cubiertos y probados (22 tests unitarios en `__tests__/x402-verify.test.ts`): activo
+incorrecto, destinatario incorrecto, monto incorrecto y hash repetido (replay).
+
+### Demo y pitch (3 min)
+
+**Demo (60–90 s):** ① abrir la UI, pegar una URL de scam, ver el `402` con los requisitos de pago
+en la consola de red → ② firmar y pagar 0.01 con la wallet de testnet → recibir el análisis con
+riesgo y el hash real enlazado a stellar.expert → ③ repetir desde la terminal con
+`scripts/agent-client.mjs` (agente autónomo) → ④ verificar el recibo con
+`scripts/verify-payment.mjs` y mostrar un rechazo de replay.
+
+**Pitch (3 min):**
+- **Problema (45 s):** cada fraude cuesta dinero y cada API de seguridad cobra suscripciones
+  fijas; los agentes de IA y las apps pequeñas no pueden pagar un SaaS por API-call.
+- **Usuario (60 s):** cualquier app o agente que necesite verificar una URL/mensaje/wallet
+  sospechosa: paga 0.01 por análisis con USDC en Stellar, sin cuenta, sin suscripción,
+  sin tarjetas — solo HTTP y x402.
+- **Por qué Stellar (30 s):** fees de centavos patrocinados por el facilitador, autorización de
+  pago nativa (auth entry) y liquidación on-chain verificable por hash.
+- **Siguiente paso (45 s):** (1) USDC real de Circle en mainnet, (2) plan de sprint para el track
+  "Agente que paga" (tope de gasto persistente, smart accounts) y el track "Verificación de
+  pagos" (verificador por hash como servicio, ya prototipado en `scripts/verify-payment.mjs`),
+  (3) marketplace de análisis por lotes para agentes.
 
 ### Wallets for x402 (auth-entry signing)
 
