@@ -72,6 +72,20 @@ export function getX402ResourceServer(): x402ResourceServer {
       if (!result.success || !result.transaction) return;
 
       try {
+        // Double-settle guard: never record the same on-chain transaction twice.
+        // If the facilitator retries settlement of the same tx, we skip it —
+        // the first receipt is the authoritative one (reintentos sin cobrar dos veces).
+        const alreadySettled = await db.payment.findFirst({
+          where: { txHash: result.transaction, status: "verified" },
+          select: { id: true },
+        });
+        if (alreadySettled) {
+          console.log(
+            `[x402] duplicate settlement ignored (already verified): ${result.transaction}`
+          );
+          return;
+        }
+
         // The handler pre-creates a Payment row (status "pending") before
         // settlement. Link the real on-chain result back to it.
         const pending = await db.payment.findFirst({
